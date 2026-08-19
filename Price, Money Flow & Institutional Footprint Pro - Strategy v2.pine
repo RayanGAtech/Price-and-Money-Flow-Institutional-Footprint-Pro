@@ -1,6 +1,6 @@
 //@version=6
 strategy(
-     "Price, Money Flow & Institutional Footprint Pro - Strategy v2",
+     "Price, Money Flow & Institutional Footprint Pro - Strategy v3",
      overlay=true,
      max_labels_count=500,
      max_boxes_count=500,
@@ -16,9 +16,7 @@ strategy(
 // 1. USER SETTINGS
 // ============================================================================
 
-// --------------------------------------------------------------------------
 // Volume Engine
-// --------------------------------------------------------------------------
 volumeMode = input.string(
      "Classic 3x",
      title="Volume Sensitivity",
@@ -36,9 +34,7 @@ vmaLength = input.int(
      minval=5,
      maxval=200)
 
-// --------------------------------------------------------------------------
 // Risk / Confirmation
-// --------------------------------------------------------------------------
 atrLength = input.int(
      14,
      title="ATR Length",
@@ -70,9 +66,7 @@ riskReward = input.float(
      minval=0.5,
      step=0.25)
 
-// --------------------------------------------------------------------------
 // Entry Quality Guardrails
-// --------------------------------------------------------------------------
 maxEntryRiskPercent = input.float(
      5.0,
      title="Maximum Entry-to-Stop Risk %",
@@ -87,9 +81,28 @@ maxEntryATR = input.float(
      maxval=10.0,
      step=0.25)
 
-// --------------------------------------------------------------------------
+// NEW: Trend / Regime Filter
+useTrendFilter = input.bool(
+     true,
+     title="Enable EMA Trend Filter")
+
+fastEmaLength = input.int(
+     20,
+     title="Fast EMA Length",
+     minval=2,
+     maxval=200)
+
+slowEmaLength = input.int(
+     50,
+     title="Slow EMA Length",
+     minval=5,
+     maxval=300)
+
+showTrendEMAs = input.bool(
+     false,
+     title="Show Trend EMAs")
+
 // Liquidity
-// --------------------------------------------------------------------------
 useLiquidityFilter = input.bool(
      false,
      title="Enable Minimum Liquidity Filter")
@@ -100,9 +113,7 @@ minimumAvgDollarVolume = input.float(
      minval=0,
      step=100000)
 
-// --------------------------------------------------------------------------
 // Session
-// --------------------------------------------------------------------------
 useSessionFilter = input.bool(
      false,
      title="Use Regular Session Filter")
@@ -111,27 +122,21 @@ regularSession = input.session(
      "0930-1600",
      title="Regular Trading Session")
 
-// --------------------------------------------------------------------------
 // Strategy Position Sizing
-// --------------------------------------------------------------------------
 positionSizePercent = input.float(
-     10.0,
+     100.0,
      title="Position Size % of Equity",
      minval=1.0,
      maxval=100.0,
      step=1.0)
 
-// --------------------------------------------------------------------------
 // Chart History
-// --------------------------------------------------------------------------
 historyMode = input.string(
      "Latest State Only",
      title="Chart History Mode",
      options=["Latest State Only", "Latest Setup", "All History"])
 
-// --------------------------------------------------------------------------
 // Display
-// --------------------------------------------------------------------------
 showTargets = input.bool(
      true,
      title="Show Live Trade Target Zones")
@@ -170,7 +175,39 @@ bool atrReady =
      atrValue > 0
 
 // ============================================================================
-// 4. PREVIOUS-BAR DOLLAR VOLUME BASELINE
+// 4. EMA TREND ENGINE
+// ============================================================================
+
+float fastEMA = ta.ema(close, fastEmaLength)
+float slowEMA = ta.ema(close, slowEmaLength)
+
+bool emaDataReady =
+     not na(fastEMA) and
+     not na(slowEMA)
+
+bool bullishTrend =
+     emaDataReady and
+     close > slowEMA and
+     fastEMA > slowEMA
+
+bool trendAllowed =
+     not useTrendFilter or
+     bullishTrend
+
+plot(
+     showTrendEMAs ? fastEMA : na,
+     title="Fast EMA",
+     color=color.blue,
+     linewidth=1)
+
+plot(
+     showTrendEMAs ? slowEMA : na,
+     title="Slow EMA",
+     color=color.orange,
+     linewidth=2)
+
+// ============================================================================
+// 5. PREVIOUS-BAR DOLLAR VOLUME BASELINE
 // ============================================================================
 
 float avgDollarVolumePrevious =
@@ -201,7 +238,7 @@ bool dataReady =
      marketDataReady
 
 // ============================================================================
-// 5. FILTERS
+// 6. FILTERS
 // ============================================================================
 
 bool inRegularSession =
@@ -219,7 +256,7 @@ bool liquidityAllowed =
      )
 
 // ============================================================================
-// 6. EVENT DETECTION
+// 7. EVENT DETECTION
 // ============================================================================
 
 bool isAbnormalDollarVolume =
@@ -238,13 +275,7 @@ bool isPotentialAbsorptionCandle =
      liquidityAllowed
 
 // ============================================================================
-// 7. STATE MACHINE
-// ============================================================================
-//
-// 0 = IDLE
-// 1 = POTENTIAL
-// 2 = DEFENDED
-// 3 = LONG ACTIVE
+// 8. STATE MACHINE
 // ============================================================================
 
 var int setupState = 0
@@ -268,7 +299,7 @@ var float plannedRiskPercent = na
 var float plannedATRExtension = na
 
 // ============================================================================
-// 8. VISUAL OBJECTS
+// 9. VISUAL OBJECTS
 // ============================================================================
 
 var label latestStateLabel = na
@@ -285,7 +316,7 @@ var line[] historicalLines = array.new<line>()
 var box[] historicalBoxes = array.new<box>()
 
 // ============================================================================
-// 9. CLEANUP HELPERS
+// 10. CLEANUP HELPERS
 // ============================================================================
 
 clearCurrentSetupLabels() =>
@@ -297,13 +328,10 @@ clearCurrentSetupLabels() =>
 deleteCurrentLines() =>
     if not na(protectedLine)
         line.delete(protectedLine)
-
     if not na(entryLine)
         line.delete(entryLine)
-
     if not na(stopLine)
         line.delete(stopLine)
-
     if not na(targetLine)
         line.delete(targetLine)
 
@@ -312,7 +340,7 @@ deleteCurrentBox() =>
         box.delete(targetBox)
 
 // ============================================================================
-// 10. NEW SETUP CANDIDATE
+// 11. NEW SETUP CANDIDATE
 // ============================================================================
 
 bool newSetupCandidate =
@@ -324,11 +352,8 @@ bool validNewSetup = false
 
 if newSetupCandidate
 
-    float candidateProtectedLevel =
-         low
-
-    float candidateAbsorptionATR =
-         atrValue
+    float candidateProtectedLevel = low
+    float candidateAbsorptionATR = atrValue
 
     float candidateFailureLevel =
          candidateProtectedLevel -
@@ -350,10 +375,6 @@ if newSetupCandidate
     if setupLevelsValid
 
         validNewSetup := true
-
-        // -------------------------------------------------------------------
-        // Visual-history cleanup
-        // -------------------------------------------------------------------
 
         if historyMode == "Latest State Only"
 
@@ -387,16 +408,12 @@ if newSetupCandidate
 
             if not na(protectedLine)
                 array.push(historicalLines, protectedLine)
-
             if not na(entryLine)
                 array.push(historicalLines, entryLine)
-
             if not na(stopLine)
                 array.push(historicalLines, stopLine)
-
             if not na(targetLine)
                 array.push(historicalLines, targetLine)
-
             if not na(targetBox)
                 array.push(historicalBoxes, targetBox)
 
@@ -405,10 +422,6 @@ if newSetupCandidate
             stopLine := na
             targetLine := na
             targetBox := na
-
-        // -------------------------------------------------------------------
-        // Activate setup
-        // -------------------------------------------------------------------
 
         setupState := 1
 
@@ -432,7 +445,6 @@ if newSetupCandidate
         plannedATRExtension := na
 
         if showProtectedLevel
-
             protectedLine := line.new(
                  x1=bar_index,
                  y1=protectedLevel,
@@ -443,7 +455,7 @@ if newSetupCandidate
                  width=2)
 
 // ============================================================================
-// 11. POTENTIAL LABEL
+// 12. POTENTIAL LABEL
 // ============================================================================
 
 if validNewSetup and showEventLabels
@@ -452,8 +464,6 @@ if validNewSetup and showEventLabels
          "POTENTIAL BLOCK ABSORPTION\n" +
          "RVOL$: " +
          str.format("{0,number,#.##}x", relativeDollarVolume) +
-         "\nDollar Vol: $" +
-         str.format("{0,number,#.##}M", dollarVolume / 1000000) +
          "\nProtected: $" +
          str.format("{0,number,#.##}", protectedLevel) +
          "\nFailure: $" +
@@ -473,12 +483,11 @@ if validNewSetup and showEventLabels
 
     if historyMode == "Latest State Only"
         latestStateLabel := lbl
-
     else if historyMode == "Latest Setup"
         array.push(currentSetupLabels, lbl)
 
 // ============================================================================
-// 12. SETUP AGE
+// 13. SETUP AGE
 // ============================================================================
 
 int barsSinceEvent =
@@ -487,7 +496,7 @@ int barsSinceEvent =
          : na
 
 // ============================================================================
-// 13. FAILURE
+// 14. FAILURE
 // ============================================================================
 
 bool absorptionFailed =
@@ -500,7 +509,6 @@ if absorptionFailed
     if showEventLabels
 
         if historyMode == "Latest State Only"
-
             if not na(latestStateLabel)
                 label.delete(latestStateLabel)
                 latestStateLabel := na
@@ -517,7 +525,6 @@ if absorptionFailed
 
         if historyMode == "Latest State Only"
             latestStateLabel := lbl
-
         else if historyMode == "Latest Setup"
             array.push(currentSetupLabels, lbl)
 
@@ -525,7 +532,6 @@ if absorptionFailed
         line.set_x2(protectedLine, bar_index)
 
     setupState := 0
-
     eventBarIndex := na
 
     absorptionHigh := na
@@ -537,11 +543,10 @@ if absorptionFailed
     defenseTriggerLevel := na
 
 // ============================================================================
-// 14. DEFENDED LEVEL
+// 15. DEFENDED LEVEL
 // ============================================================================
 
-float candleRange =
-     high - low
+float candleRange = high - low
 
 bool closeInUpperHalf =
      candleRange > 0 and
@@ -571,7 +576,6 @@ if strongDefenseReaction
     if showEventLabels
 
         if historyMode == "Latest State Only"
-
             if not na(latestStateLabel)
                 label.delete(latestStateLabel)
                 latestStateLabel := na
@@ -588,12 +592,11 @@ if strongDefenseReaction
 
         if historyMode == "Latest State Only"
             latestStateLabel := lbl
-
         else if historyMode == "Latest Setup"
             array.push(currentSetupLabels, lbl)
 
 // ============================================================================
-// 15. STRUCTURAL CONFIRMATION
+// 16. STRUCTURAL CONFIRMATION
 // ============================================================================
 
 bool confirmationWindowOpen =
@@ -615,7 +618,7 @@ bool absorptionConfirmed =
      breaksAbsorptionHigh
 
 // ============================================================================
-// 16. CANDIDATE TRADE
+// 17. CANDIDATE TRADE
 // ============================================================================
 
 float candidateEntry =
@@ -678,21 +681,35 @@ bool atrExtensionAcceptable =
      not na(candidateATRExtension) and
      candidateATRExtension <= maxEntryATR
 
+bool trendAcceptable =
+     candidateTradeValid and
+     trendAllowed
+
 bool entryQualityAccepted =
      candidateTradeValid and
      riskPercentAcceptable and
-     atrExtensionAcceptable
+     atrExtensionAcceptable and
+     trendAcceptable
 
 bool entryTooExtended =
      candidateTradeValid and
-     not entryQualityAccepted
+     (
+         not riskPercentAcceptable or
+         not atrExtensionAcceptable
+     )
+
+bool entryBlockedByTrend =
+     candidateTradeValid and
+     riskPercentAcceptable and
+     atrExtensionAcceptable and
+     not trendAcceptable
 
 bool invalidTradeCalculation =
      absorptionConfirmed and
      not candidateTradeValid
 
 // ============================================================================
-// 17. INVALID TRADE
+// 18. INVALID TRADE
 // ============================================================================
 
 if invalidTradeCalculation
@@ -700,7 +717,6 @@ if invalidTradeCalculation
     if showEventLabels
 
         if historyMode == "Latest State Only"
-
             if not na(latestStateLabel)
                 label.delete(latestStateLabel)
                 latestStateLabel := na
@@ -717,7 +733,6 @@ if invalidTradeCalculation
 
         if historyMode == "Latest State Only"
             latestStateLabel := lbl
-
         else if historyMode == "Latest Setup"
             array.push(currentSetupLabels, lbl)
 
@@ -725,7 +740,7 @@ if invalidTradeCalculation
     eventBarIndex := na
 
 // ============================================================================
-// 18. EXTENDED ENTRY REJECTION
+// 19. EXTENSION REJECTION
 // ============================================================================
 
 if entryTooExtended
@@ -733,7 +748,6 @@ if entryTooExtended
     if showEventLabels
 
         if historyMode == "Latest State Only"
-
             if not na(latestStateLabel)
                 label.delete(latestStateLabel)
                 latestStateLabel := na
@@ -743,12 +757,8 @@ if entryTooExtended
              "ENTRY REJECTED - TOO EXTENDED\n" +
              "Risk: " +
              str.format("{0,number,#.##}%", candidateRiskPercent) +
-             "\nMax Risk: " +
-             str.format("{0,number,#.##}%", maxEntryRiskPercent) +
              "\nATR Extension: " +
-             str.format("{0,number,#.##}x", candidateATRExtension) +
-             "\nMax ATR: " +
-             str.format("{0,number,#.##}x", maxEntryATR)
+             str.format("{0,number,#.##}x", candidateATRExtension)
 
         label lbl = label.new(
              bar_index,
@@ -762,18 +772,59 @@ if entryTooExtended
 
         if historyMode == "Latest State Only"
             latestStateLabel := lbl
-
         else if historyMode == "Latest Setup"
             array.push(currentSetupLabels, lbl)
-
-    if not na(protectedLine)
-        line.set_x2(protectedLine, bar_index)
 
     setupState := 0
     eventBarIndex := na
 
 // ============================================================================
-// 19. LONG ENTRY
+// 20. TREND REJECTION
+// ============================================================================
+
+if entryBlockedByTrend
+
+    if showEventLabels
+
+        if historyMode == "Latest State Only"
+            if not na(latestStateLabel)
+                label.delete(latestStateLabel)
+                latestStateLabel := na
+
+        string trendRejectText =
+             "ABSORPTION CONFIRMED\n" +
+             "ENTRY REJECTED - TREND FILTER\n" +
+             "Close: $" +
+             str.format("{0,number,#.##}", close) +
+             "\nEMA " +
+             str.tostring(fastEmaLength) +
+             ": $" +
+             str.format("{0,number,#.##}", fastEMA) +
+             "\nEMA " +
+             str.tostring(slowEmaLength) +
+             ": $" +
+             str.format("{0,number,#.##}", slowEMA)
+
+        label lbl = label.new(
+             bar_index,
+             high + atrValue * 0.85,
+             trendRejectText,
+             yloc=yloc.price,
+             style=label.style_label_down,
+             color=color.gray,
+             textcolor=color.white,
+             size=size.small)
+
+        if historyMode == "Latest State Only"
+            latestStateLabel := lbl
+        else if historyMode == "Latest Setup"
+            array.push(currentSetupLabels, lbl)
+
+    setupState := 0
+    eventBarIndex := na
+
+// ============================================================================
+// 21. LONG ENTRY
 // ============================================================================
 
 bool longSignal =
@@ -833,13 +884,12 @@ if longSignal
          width=2)
 
 // ============================================================================
-// 20. LONG LABEL
+// 22. LONG LABEL
 // ============================================================================
 
 if longSignal and showEventLabels
 
     if historyMode == "Latest State Only"
-
         if not na(latestStateLabel)
             label.delete(latestStateLabel)
             latestStateLabel := na
@@ -872,12 +922,11 @@ if longSignal and showEventLabels
 
     if historyMode == "Latest State Only"
         latestStateLabel := lbl
-
     else if historyMode == "Latest Setup"
         array.push(currentSetupLabels, lbl)
 
 // ============================================================================
-// 21. SETUP EXPIRATION
+// 23. SETUP EXPIRATION
 // ============================================================================
 
 bool setupExpired =
@@ -896,7 +945,6 @@ if setupExpired
     if showEventLabels
 
         if historyMode == "Latest State Only"
-
             if not na(latestStateLabel)
                 label.delete(latestStateLabel)
                 latestStateLabel := na
@@ -913,7 +961,6 @@ if setupExpired
 
         if historyMode == "Latest State Only"
             latestStateLabel := lbl
-
         else if historyMode == "Latest Setup"
             array.push(currentSetupLabels, lbl)
 
@@ -924,11 +971,7 @@ if setupExpired
     eventBarIndex := na
 
 // ============================================================================
-// 22. STRATEGY EXIT
-// ============================================================================
-//
-// Entry is assumed at confirmation-bar close.
-// Stop and target are activated from the NEXT candle.
+// 24. STRATEGY EXIT
 // ============================================================================
 
 bool tradeActive =
@@ -943,7 +986,6 @@ bool exitOrdersActive =
      not na(plannedTarget)
 
 if exitOrdersActive
-
     strategy.exit(
          "Long Exit",
          from_entry="Long",
@@ -951,7 +993,7 @@ if exitOrdersActive
          limit=plannedTarget)
 
 // ============================================================================
-// 23. LIVE TRADE GRAPHICS
+// 25. LIVE TRADE GRAPHICS
 // ============================================================================
 
 if tradeActive
@@ -991,13 +1033,10 @@ if tradeActive
                  text_halign="center")
 
         else
-
-            box.set_right(
-                 targetBox,
-                 bar_index + 10)
+            box.set_right(targetBox, bar_index + 10)
 
 // ============================================================================
-// 24. CURRENT R
+// 26. CURRENT R
 // ============================================================================
 
 float currentR =
@@ -1009,7 +1048,7 @@ float currentR =
          : na
 
 // ============================================================================
-// 25. TRADE COMPLETION
+// 27. TRADE COMPLETION
 // ============================================================================
 
 bool tradeClosed =
@@ -1053,14 +1092,14 @@ if tradeClosed
     plannedATRExtension := na
 
 // ============================================================================
-// 26. DIAGNOSTIC PANEL
+// 28. DIAGNOSTIC PANEL
 // ============================================================================
 
 var table diagnostics =
      table.new(
          position.top_right,
          2,
-         16,
+         18,
          border_width=1)
 
 string stateText = switch setupState
@@ -1078,6 +1117,19 @@ string sessionText =
 
 string liquidityText =
      liquidityAllowed ? "YES" : "NO"
+
+string trendText =
+     bullishTrend ? "BULLISH" : "BLOCKED"
+
+string fastEmaText =
+     not na(fastEMA)
+         ? str.format("${0,number,#.##}", fastEMA)
+         : "-"
+
+string slowEmaText =
+     not na(slowEMA)
+         ? str.format("${0,number,#.##}", slowEMA)
+         : "-"
 
 string rvolText =
      not na(relativeDollarVolume)
@@ -1165,51 +1217,60 @@ if barstate.islast
         table.cell(diagnostics, 0, 5, "Liquidity")
         table.cell(diagnostics, 1, 5, liquidityText)
 
-        table.cell(diagnostics, 0, 6, "Bars Since Event")
-        table.cell(diagnostics, 1, 6, barsText)
+        table.cell(diagnostics, 0, 6, "Trend")
+        table.cell(diagnostics, 1, 6, trendText)
 
-        table.cell(diagnostics, 0, 7, "Protected")
-        table.cell(diagnostics, 1, 7, protectedText)
+        table.cell(diagnostics, 0, 7, "Fast EMA")
+        table.cell(diagnostics, 1, 7, fastEmaText)
 
-        table.cell(diagnostics, 0, 8, "Failure")
-        table.cell(diagnostics, 1, 8, failureText)
+        table.cell(diagnostics, 0, 8, "Slow EMA")
+        table.cell(diagnostics, 1, 8, slowEmaText)
 
-        table.cell(diagnostics, 0, 9, "Defense >")
-        table.cell(diagnostics, 1, 9, defenseText)
+        table.cell(diagnostics, 0, 9, "Bars Since Event")
+        table.cell(diagnostics, 1, 9, barsText)
 
-        table.cell(diagnostics, 0, 10, "Confirm >")
-        table.cell(diagnostics, 1, 10, confirmationText)
+        table.cell(diagnostics, 0, 10, "Protected")
+        table.cell(diagnostics, 1, 10, protectedText)
 
-        table.cell(diagnostics, 0, 11, "Entry")
-        table.cell(diagnostics, 1, 11, entryText)
+        table.cell(diagnostics, 0, 11, "Failure")
+        table.cell(diagnostics, 1, 11, failureText)
 
-        table.cell(diagnostics, 0, 12, "Stop")
-        table.cell(diagnostics, 1, 12, stopText)
+        table.cell(diagnostics, 0, 12, "Defense >")
+        table.cell(diagnostics, 1, 12, defenseText)
 
-        table.cell(diagnostics, 0, 13, "Target")
-        table.cell(diagnostics, 1, 13, targetText)
+        table.cell(diagnostics, 0, 13, "Confirm >")
+        table.cell(diagnostics, 1, 13, confirmationText)
 
-        table.cell(diagnostics, 0, 14, "Entry Risk / ATR")
+        table.cell(diagnostics, 0, 14, "Entry")
+        table.cell(diagnostics, 1, 14, entryText)
+
+        table.cell(diagnostics, 0, 15, "Stop / Target")
         table.cell(
              diagnostics,
              1,
-             14,
+             15,
+             stopText + " / " + targetText)
+
+        table.cell(diagnostics, 0, 16, "Risk / ATR")
+        table.cell(
+             diagnostics,
+             1,
+             16,
              riskText + " / " + atrExtensionText)
 
-        table.cell(diagnostics, 0, 15, "Current R")
-        table.cell(diagnostics, 1, 15, currentRText)
+        table.cell(diagnostics, 0, 17, "Current R")
+        table.cell(diagnostics, 1, 17, currentRText)
 
     else
-
         table.clear(
              diagnostics,
              0,
              0,
              1,
-             15)
+             17)
 
 // ============================================================================
-// 27. ALERTS
+// 29. ALERTS
 // ============================================================================
 
 alertcondition(
@@ -1224,8 +1285,13 @@ alertcondition(
 
 alertcondition(
      entryTooExtended,
-     title="Entry Rejected",
+     title="Entry Rejected - Risk",
      message="Block Absorption confirmed but entry rejected because risk/ATR extension is too large.")
+
+alertcondition(
+     entryBlockedByTrend,
+     title="Entry Rejected - Trend",
+     message="Block Absorption confirmed but entry rejected by EMA trend filter.")
 
 alertcondition(
      longSignal,
