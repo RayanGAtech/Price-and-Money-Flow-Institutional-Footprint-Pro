@@ -1,8 +1,9 @@
 //@version=6
 strategy(
-     "Price, Money Flow & Institutional Footprint Pro - Strategy v1",
+     "Price, Money Flow & Institutional Footprint Pro - Strategy v2",
      overlay=true,
      max_labels_count=500,
+     max_boxes_count=500,
      max_lines_count=500,
      max_bars_back=500,
      initial_capital=100000,
@@ -58,10 +59,10 @@ defenseReactionATR = input.float(
      step=0.05)
 
 confirmationBars = input.int(
-     8,
+     20,
      title="Maximum Confirmation Window",
      minval=1,
-     maxval=30)
+     maxval=50)
 
 riskReward = input.float(
      2.5,
@@ -80,7 +81,7 @@ maxEntryRiskPercent = input.float(
      step=0.5)
 
 maxEntryATR = input.float(
-     2.0,
+     5.0,
      title="Maximum Entry Extension ATR",
      minval=0.5,
      maxval=10.0,
@@ -111,7 +112,7 @@ regularSession = input.session(
      title="Regular Trading Session")
 
 // --------------------------------------------------------------------------
-// Backtest Controls
+// Strategy Position Sizing
 // --------------------------------------------------------------------------
 positionSizePercent = input.float(
      10.0,
@@ -120,13 +121,32 @@ positionSizePercent = input.float(
      maxval=100.0,
      step=1.0)
 
-showSetupLabels = input.bool(
+// --------------------------------------------------------------------------
+// Chart History
+// --------------------------------------------------------------------------
+historyMode = input.string(
+     "Latest State Only",
+     title="Chart History Mode",
+     options=["Latest State Only", "Latest Setup", "All History"])
+
+// --------------------------------------------------------------------------
+// Display
+// --------------------------------------------------------------------------
+showTargets = input.bool(
      true,
-     title="Show Setup Labels")
+     title="Show Live Trade Target Zones")
 
 showProtectedLevel = input.bool(
      true,
-     title="Show Protected Level")
+     title="Show Protected Absorption Level")
+
+showEventLabels = input.bool(
+     true,
+     title="Show Absorption Event Labels")
+
+showDiagnosticPanel = input.bool(
+     true,
+     title="Show Diagnostic Panel")
 
 // ============================================================================
 // 2. MULTIPLIER ENGINE
@@ -172,6 +192,7 @@ bool marketDataReady =
      not na(low) and
      not na(close) and
      not na(volume) and
+     not na(dollarVolume) and
      dollarVolume > 0
 
 bool dataReady =
@@ -223,7 +244,7 @@ bool isPotentialAbsorptionCandle =
 // 0 = IDLE
 // 1 = POTENTIAL
 // 2 = DEFENDED
-// 3 = TRADE ACTIVE
+// 3 = LONG ACTIVE
 // ============================================================================
 
 var int setupState = 0
@@ -242,12 +263,56 @@ var float defenseTriggerLevel = na
 var float plannedEntry = na
 var float plannedStop = na
 var float plannedTarget = na
-var float plannedRisk = na
-
-var line protectedLine = na
+var float plannedRiskDistance = na
+var float plannedRiskPercent = na
+var float plannedATRExtension = na
 
 // ============================================================================
-// 8. NEW ABSORPTION SETUP
+// 8. VISUAL OBJECTS
+// ============================================================================
+
+var label latestStateLabel = na
+var label[] currentSetupLabels = array.new<label>()
+
+var line protectedLine = na
+var line entryLine = na
+var line stopLine = na
+var line targetLine = na
+
+var box targetBox = na
+
+var line[] historicalLines = array.new<line>()
+var box[] historicalBoxes = array.new<box>()
+
+// ============================================================================
+// 9. CLEANUP HELPERS
+// ============================================================================
+
+clearCurrentSetupLabels() =>
+    while array.size(currentSetupLabels) > 0
+        label lbl = array.pop(currentSetupLabels)
+        if not na(lbl)
+            label.delete(lbl)
+
+deleteCurrentLines() =>
+    if not na(protectedLine)
+        line.delete(protectedLine)
+
+    if not na(entryLine)
+        line.delete(entryLine)
+
+    if not na(stopLine)
+        line.delete(stopLine)
+
+    if not na(targetLine)
+        line.delete(targetLine)
+
+deleteCurrentBox() =>
+    if not na(targetBox)
+        box.delete(targetBox)
+
+// ============================================================================
+// 10. NEW SETUP CANDIDATE
 // ============================================================================
 
 bool newSetupCandidate =
@@ -259,21 +324,24 @@ bool validNewSetup = false
 
 if newSetupCandidate
 
-    float candidateProtectedLevel = low
-    float candidateATR = atrValue
+    float candidateProtectedLevel =
+         low
+
+    float candidateAbsorptionATR =
+         atrValue
 
     float candidateFailureLevel =
          candidateProtectedLevel -
-         candidateATR * atrBufferMultiplier
+         candidateAbsorptionATR * atrBufferMultiplier
 
     float candidateDefenseTrigger =
          candidateProtectedLevel +
-         candidateATR * defenseReactionATR
+         candidateAbsorptionATR * defenseReactionATR
 
     bool setupLevelsValid =
          not na(candidateProtectedLevel) and
-         not na(candidateATR) and
-         candidateATR > 0 and
+         not na(candidateAbsorptionATR) and
+         candidateAbsorptionATR > 0 and
          not na(candidateFailureLevel) and
          not na(candidateDefenseTrigger) and
          candidateFailureLevel < candidateProtectedLevel and
@@ -283,13 +351,73 @@ if newSetupCandidate
 
         validNewSetup := true
 
+        // -------------------------------------------------------------------
+        // Visual-history cleanup
+        // -------------------------------------------------------------------
+
+        if historyMode == "Latest State Only"
+
+            if not na(latestStateLabel)
+                label.delete(latestStateLabel)
+                latestStateLabel := na
+
+            clearCurrentSetupLabels()
+            deleteCurrentLines()
+            deleteCurrentBox()
+
+            protectedLine := na
+            entryLine := na
+            stopLine := na
+            targetLine := na
+            targetBox := na
+
+        else if historyMode == "Latest Setup"
+
+            clearCurrentSetupLabels()
+            deleteCurrentLines()
+            deleteCurrentBox()
+
+            protectedLine := na
+            entryLine := na
+            stopLine := na
+            targetLine := na
+            targetBox := na
+
+        else
+
+            if not na(protectedLine)
+                array.push(historicalLines, protectedLine)
+
+            if not na(entryLine)
+                array.push(historicalLines, entryLine)
+
+            if not na(stopLine)
+                array.push(historicalLines, stopLine)
+
+            if not na(targetLine)
+                array.push(historicalLines, targetLine)
+
+            if not na(targetBox)
+                array.push(historicalBoxes, targetBox)
+
+            protectedLine := na
+            entryLine := na
+            stopLine := na
+            targetLine := na
+            targetBox := na
+
+        // -------------------------------------------------------------------
+        // Activate setup
+        // -------------------------------------------------------------------
+
         setupState := 1
+
         eventBarIndex := bar_index
         entryBarIndex := na
 
         absorptionHigh := high
         absorptionLow := low
-        absorptionATR := candidateATR
+        absorptionATR := candidateAbsorptionATR
 
         protectedLevel := candidateProtectedLevel
         failureLevel := candidateFailureLevel
@@ -298,13 +426,13 @@ if newSetupCandidate
         plannedEntry := na
         plannedStop := na
         plannedTarget := na
-        plannedRisk := na
 
-        if not na(protectedLine)
-            line.delete(protectedLine)
-            protectedLine := na
+        plannedRiskDistance := na
+        plannedRiskPercent := na
+        plannedATRExtension := na
 
         if showProtectedLevel
+
             protectedLine := line.new(
                  x1=bar_index,
                  y1=protectedLevel,
@@ -314,23 +442,43 @@ if newSetupCandidate
                  style=line.style_dashed,
                  width=2)
 
-        if showSetupLabels
-            label.new(
-                 bar_index,
-                 high + atrValue * 0.5,
-                 "POTENTIAL BLOCK ABSORPTION\n" +
-                 "RVOL$: " +
-                 str.format("{0,number,#.##}x", relativeDollarVolume) +
-                 "\nProtected: $" +
-                 str.format("{0,number,#.##}", protectedLevel),
-                 yloc=yloc.price,
-                 style=label.style_label_down,
-                 color=color.orange,
-                 textcolor=color.black,
-                 size=size.small)
+// ============================================================================
+// 11. POTENTIAL LABEL
+// ============================================================================
+
+if validNewSetup and showEventLabels
+
+    string eventText =
+         "POTENTIAL BLOCK ABSORPTION\n" +
+         "RVOL$: " +
+         str.format("{0,number,#.##}x", relativeDollarVolume) +
+         "\nDollar Vol: $" +
+         str.format("{0,number,#.##}M", dollarVolume / 1000000) +
+         "\nProtected: $" +
+         str.format("{0,number,#.##}", protectedLevel) +
+         "\nFailure: $" +
+         str.format("{0,number,#.##}", failureLevel) +
+         "\nDefense > $" +
+         str.format("{0,number,#.##}", defenseTriggerLevel)
+
+    label lbl = label.new(
+         bar_index,
+         high + atrValue * 0.65,
+         eventText,
+         yloc=yloc.price,
+         style=label.style_label_down,
+         color=color.orange,
+         textcolor=color.black,
+         size=size.small)
+
+    if historyMode == "Latest State Only"
+        latestStateLabel := lbl
+
+    else if historyMode == "Latest Setup"
+        array.push(currentSetupLabels, lbl)
 
 // ============================================================================
-// 9. SETUP AGE
+// 12. SETUP AGE
 // ============================================================================
 
 int barsSinceEvent =
@@ -339,7 +487,7 @@ int barsSinceEvent =
          : na
 
 // ============================================================================
-// 10. ABSORPTION FAILURE
+// 13. FAILURE
 // ============================================================================
 
 bool absorptionFailed =
@@ -349,21 +497,35 @@ bool absorptionFailed =
 
 if absorptionFailed
 
-    if showSetupLabels
-        label.new(
+    if showEventLabels
+
+        if historyMode == "Latest State Only"
+
+            if not na(latestStateLabel)
+                label.delete(latestStateLabel)
+                latestStateLabel := na
+
+        label lbl = label.new(
              bar_index,
-             high + atrValue * 0.5,
-             "ABSORPTION FAILED",
+             high + atrValue * 0.85,
+             "ABSORPTION FAILED\nProtected Level Broken",
              yloc=yloc.price,
              style=label.style_label_down,
              color=color.gray,
              textcolor=color.white,
              size=size.small)
 
+        if historyMode == "Latest State Only"
+            latestStateLabel := lbl
+
+        else if historyMode == "Latest Setup"
+            array.push(currentSetupLabels, lbl)
+
     if not na(protectedLine)
         line.set_x2(protectedLine, bar_index)
 
     setupState := 0
+
     eventBarIndex := na
 
     absorptionHigh := na
@@ -375,7 +537,7 @@ if absorptionFailed
     defenseTriggerLevel := na
 
 // ============================================================================
-// 11. DEFENDED-LEVEL ENGINE
+// 14. DEFENDED LEVEL
 // ============================================================================
 
 float candleRange =
@@ -406,19 +568,32 @@ if strongDefenseReaction
 
     setupState := 2
 
-    if showSetupLabels
-        label.new(
+    if showEventLabels
+
+        if historyMode == "Latest State Only"
+
+            if not na(latestStateLabel)
+                label.delete(latestStateLabel)
+                latestStateLabel := na
+
+        label lbl = label.new(
              bar_index,
-             low - atrValue * 0.35,
-             "BLOCK LEVEL DEFENDED",
+             low - atrValue * 0.45,
+             "BLOCK LEVEL DEFENDED\nBullish Reaction Confirmed",
              yloc=yloc.price,
              style=label.style_label_up,
              color=color.orange,
              textcolor=color.white,
              size=size.small)
 
+        if historyMode == "Latest State Only"
+            latestStateLabel := lbl
+
+        else if historyMode == "Latest Setup"
+            array.push(currentSetupLabels, lbl)
+
 // ============================================================================
-// 12. CONFIRMATION WINDOW
+// 15. STRUCTURAL CONFIRMATION
 // ============================================================================
 
 bool confirmationWindowOpen =
@@ -440,7 +615,7 @@ bool absorptionConfirmed =
      breaksAbsorptionHigh
 
 // ============================================================================
-// 13. CANDIDATE TRADE
+// 16. CANDIDATE TRADE
 // ============================================================================
 
 float candidateEntry =
@@ -456,7 +631,7 @@ float candidateStop =
            absorptionATR * atrBufferMultiplier
          : na
 
-float candidateRisk =
+float candidateRiskDistance =
      absorptionConfirmed and
      not na(candidateEntry) and
      not na(candidateStop)
@@ -465,36 +640,42 @@ float candidateRisk =
 
 bool candidateRiskValid =
      absorptionConfirmed and
-     not na(candidateRisk) and
-     candidateRisk > 0
+     not na(candidateRiskDistance) and
+     candidateRiskDistance > 0
 
 float candidateRiskPercent =
-     candidateRiskValid
-         ? (candidateRisk / candidateEntry) * 100
+     candidateRiskValid and
+     candidateEntry > 0
+         ? (candidateRiskDistance / candidateEntry) * 100
          : na
 
 float candidateATRExtension =
      candidateRiskValid and
+     not na(absorptionATR) and
      absorptionATR > 0
-         ? candidateRisk / absorptionATR
+         ? candidateRiskDistance / absorptionATR
          : na
 
 float candidateTarget =
      candidateRiskValid
          ? candidateEntry +
-           candidateRisk * riskReward
+           candidateRiskDistance * riskReward
          : na
 
 bool candidateTradeValid =
      candidateRiskValid and
+     not na(candidateEntry) and
+     not na(candidateStop) and
      not na(candidateTarget)
 
 bool riskPercentAcceptable =
      candidateTradeValid and
+     not na(candidateRiskPercent) and
      candidateRiskPercent <= maxEntryRiskPercent
 
 bool atrExtensionAcceptable =
      candidateTradeValid and
+     not na(candidateATRExtension) and
      candidateATRExtension <= maxEntryATR
 
 bool entryQualityAccepted =
@@ -506,40 +687,93 @@ bool entryTooExtended =
      candidateTradeValid and
      not entryQualityAccepted
 
+bool invalidTradeCalculation =
+     absorptionConfirmed and
+     not candidateTradeValid
+
 // ============================================================================
-// 14. REJECT EXTENDED ENTRIES
+// 17. INVALID TRADE
+// ============================================================================
+
+if invalidTradeCalculation
+
+    if showEventLabels
+
+        if historyMode == "Latest State Only"
+
+            if not na(latestStateLabel)
+                label.delete(latestStateLabel)
+                latestStateLabel := na
+
+        label lbl = label.new(
+             bar_index,
+             high + atrValue * 0.85,
+             "ABSORPTION CONFIRMED\nINVALID TRADE CALCULATION",
+             yloc=yloc.price,
+             style=label.style_label_down,
+             color=color.red,
+             textcolor=color.white,
+             size=size.small)
+
+        if historyMode == "Latest State Only"
+            latestStateLabel := lbl
+
+        else if historyMode == "Latest Setup"
+            array.push(currentSetupLabels, lbl)
+
+    setupState := 0
+    eventBarIndex := na
+
+// ============================================================================
+// 18. EXTENDED ENTRY REJECTION
 // ============================================================================
 
 if entryTooExtended
 
-    if showSetupLabels
-        label.new(
-             bar_index,
-             high + atrValue * 0.6,
-             "ABSORPTION CONFIRMED\nENTRY REJECTED\n" +
+    if showEventLabels
+
+        if historyMode == "Latest State Only"
+
+            if not na(latestStateLabel)
+                label.delete(latestStateLabel)
+                latestStateLabel := na
+
+        string rejectText =
+             "ABSORPTION CONFIRMED\n" +
+             "ENTRY REJECTED - TOO EXTENDED\n" +
              "Risk: " +
              str.format("{0,number,#.##}%", candidateRiskPercent) +
-             "\nATR Ext: " +
-             str.format("{0,number,#.##}x", candidateATRExtension),
+             "\nMax Risk: " +
+             str.format("{0,number,#.##}%", maxEntryRiskPercent) +
+             "\nATR Extension: " +
+             str.format("{0,number,#.##}x", candidateATRExtension) +
+             "\nMax ATR: " +
+             str.format("{0,number,#.##}x", maxEntryATR)
+
+        label lbl = label.new(
+             bar_index,
+             high + atrValue * 0.85,
+             rejectText,
              yloc=yloc.price,
              style=label.style_label_down,
              color=color.gray,
              textcolor=color.white,
              size=size.small)
 
+        if historyMode == "Latest State Only"
+            latestStateLabel := lbl
+
+        else if historyMode == "Latest Setup"
+            array.push(currentSetupLabels, lbl)
+
+    if not na(protectedLine)
+        line.set_x2(protectedLine, bar_index)
+
     setupState := 0
     eventBarIndex := na
 
-    absorptionHigh := na
-    absorptionLow := na
-    absorptionATR := na
-
-    protectedLevel := na
-    failureLevel := na
-    defenseTriggerLevel := na
-
 // ============================================================================
-// 15. STRATEGY ENTRY
+// 19. LONG ENTRY
 // ============================================================================
 
 bool longSignal =
@@ -551,48 +785,158 @@ if longSignal
     plannedEntry := candidateEntry
     plannedStop := candidateStop
     plannedTarget := candidateTarget
-    plannedRisk := candidateRisk
+
+    plannedRiskDistance := candidateRiskDistance
+    plannedRiskPercent := candidateRiskPercent
+    plannedATRExtension := candidateATRExtension
 
     entryBarIndex := bar_index
     setupState := 3
 
+    float orderValue =
+         strategy.equity *
+         (positionSizePercent / 100.0)
+
     float qty =
-         (strategy.equity * (positionSizePercent / 100.0)) /
-         plannedEntry
+         orderValue / plannedEntry
 
     strategy.entry(
          "Long",
          strategy.long,
          qty=qty)
 
-    if showSetupLabels
-        label.new(
-             bar_index,
-             low - atrValue * 0.5,
-             "LONG\n" +
-             "Entry: $" +
-             str.format("{0,number,#.##}", plannedEntry) +
-             "\nStop: $" +
-             str.format("{0,number,#.##}", plannedStop) +
-             "\nTarget: $" +
-             str.format("{0,number,#.##}", plannedTarget),
-             yloc=yloc.price,
-             style=label.style_label_up,
-             color=color.green,
-             textcolor=color.white,
-             size=size.normal)
+    if not na(protectedLine)
+        line.set_x2(protectedLine, bar_index)
+
+    entryLine := line.new(
+         x1=bar_index,
+         y1=plannedEntry,
+         x2=bar_index + 10,
+         y2=plannedEntry,
+         color=color.green,
+         width=1)
+
+    stopLine := line.new(
+         x1=bar_index,
+         y1=plannedStop,
+         x2=bar_index + 10,
+         y2=plannedStop,
+         color=color.red,
+         width=2)
+
+    targetLine := line.new(
+         x1=bar_index,
+         y1=plannedTarget,
+         x2=bar_index + 10,
+         y2=plannedTarget,
+         color=color.green,
+         width=2)
 
 // ============================================================================
-// 16. EXIT ORDERS
+// 20. LONG LABEL
+// ============================================================================
+
+if longSignal and showEventLabels
+
+    if historyMode == "Latest State Only"
+
+        if not na(latestStateLabel)
+            label.delete(latestStateLabel)
+            latestStateLabel := na
+
+    string longText =
+         "BLOCK ABSORPTION CONFIRMED\n" +
+         "LONG\n" +
+         "Entry: $" +
+         str.format("{0,number,#.##}", plannedEntry) +
+         "\nStop: $" +
+         str.format("{0,number,#.##}", plannedStop) +
+         "\nRisk: " +
+         str.format("{0,number,#.##}%", plannedRiskPercent) +
+         "\nATR Ext: " +
+         str.format("{0,number,#.##}x", plannedATRExtension) +
+         "\nTarget (" +
+         str.format("{0,number,#.##}", riskReward) +
+         "R): $" +
+         str.format("{0,number,#.##}", plannedTarget)
+
+    label lbl = label.new(
+         bar_index,
+         low - atrValue * 0.70,
+         longText,
+         yloc=yloc.price,
+         style=label.style_label_up,
+         color=color.green,
+         textcolor=color.white,
+         size=size.normal)
+
+    if historyMode == "Latest State Only"
+        latestStateLabel := lbl
+
+    else if historyMode == "Latest Setup"
+        array.push(currentSetupLabels, lbl)
+
+// ============================================================================
+// 21. SETUP EXPIRATION
+// ============================================================================
+
+bool setupExpired =
+     (setupState == 1 or setupState == 2) and
+     not na(barsSinceEvent) and
+     barsSinceEvent > confirmationBars
+
+if setupExpired
+
+    string expirationReason =
+         setupState == 1
+             ? "ABSORPTION EXPIRED\nDefense Never Confirmed"
+             : "ABSORPTION EXPIRED\nNo Break Above $" +
+               str.format("{0,number,#.##}", absorptionHigh)
+
+    if showEventLabels
+
+        if historyMode == "Latest State Only"
+
+            if not na(latestStateLabel)
+                label.delete(latestStateLabel)
+                latestStateLabel := na
+
+        label lbl = label.new(
+             bar_index,
+             high + atrValue,
+             expirationReason,
+             yloc=yloc.price,
+             style=label.style_label_down,
+             color=color.gray,
+             textcolor=color.white,
+             size=size.small)
+
+        if historyMode == "Latest State Only"
+            latestStateLabel := lbl
+
+        else if historyMode == "Latest Setup"
+            array.push(currentSetupLabels, lbl)
+
+    if not na(protectedLine)
+        line.set_x2(protectedLine, bar_index)
+
+    setupState := 0
+    eventBarIndex := na
+
+// ============================================================================
+// 22. STRATEGY EXIT
 // ============================================================================
 //
-// The setup is entered at the confirmation close.
-// We start evaluating stop/target from the next bar.
+// Entry is assumed at confirmation-bar close.
+// Stop and target are activated from the NEXT candle.
 // ============================================================================
 
-bool exitOrdersActive =
+bool tradeActive =
      setupState == 3 and
-     strategy.position_size > 0 and
+     strategy.position_size > 0
+
+bool exitOrdersActive =
+     tradeActive and
      not na(entryBarIndex) and
      bar_index > entryBarIndex and
      not na(plannedStop) and
@@ -607,40 +951,65 @@ if exitOrdersActive
          limit=plannedTarget)
 
 // ============================================================================
-// 17. SETUP EXPIRATION
+// 23. LIVE TRADE GRAPHICS
 // ============================================================================
 
-bool setupExpired =
-     (setupState == 1 or setupState == 2) and
-     not na(barsSinceEvent) and
-     barsSinceEvent > confirmationBars
+if tradeActive
 
-if setupExpired
+    if not na(entryLine)
+        line.set_x2(entryLine, bar_index + 2)
 
-    if showSetupLabels
-        label.new(
-             bar_index,
-             high + atrValue * 0.6,
-             "ABSORPTION EXPIRED",
-             yloc=yloc.price,
-             style=label.style_label_down,
-             color=color.gray,
-             textcolor=color.white,
-             size=size.small)
+    if not na(stopLine)
+        line.set_x2(stopLine, bar_index + 2)
 
-    setupState := 0
-    eventBarIndex := na
+    if not na(targetLine)
+        line.set_x2(targetLine, bar_index + 2)
 
-    absorptionHigh := na
-    absorptionLow := na
-    absorptionATR := na
+    if showTargets
 
-    protectedLevel := na
-    failureLevel := na
-    defenseTriggerLevel := na
+        if na(targetBox)
+
+            targetBox := box.new(
+                 left=entryBarIndex,
+                 top=plannedTarget,
+                 right=bar_index + 10,
+                 bottom=plannedStop,
+                 bgcolor=color.new(color.green, 90),
+                 border_color=color.green,
+                 border_style=line.style_dashed,
+                 text=
+                     "CONFIRMED BLOCK ABSORPTION\n" +
+                     "Entry: $" +
+                     str.format("{0,number,#.##}", plannedEntry) +
+                     "\nStop: $" +
+                     str.format("{0,number,#.##}", plannedStop) +
+                     "\nTarget: $" +
+                     str.format("{0,number,#.##}", plannedTarget),
+                 text_color=color.white,
+                 text_size=size.small,
+                 text_valign="center",
+                 text_halign="center")
+
+        else
+
+            box.set_right(
+                 targetBox,
+                 bar_index + 10)
 
 // ============================================================================
-// 18. TRADE COMPLETION RESET
+// 24. CURRENT R
+// ============================================================================
+
+float currentR =
+     tradeActive and
+     not na(plannedRiskDistance) and
+     plannedRiskDistance > 0
+         ? (close - plannedEntry) /
+           plannedRiskDistance
+         : na
+
+// ============================================================================
+// 25. TRADE COMPLETION
 // ============================================================================
 
 bool tradeClosed =
@@ -649,6 +1018,18 @@ bool tradeClosed =
      not longSignal
 
 if tradeClosed
+
+    if not na(entryLine)
+        line.set_x2(entryLine, bar_index)
+
+    if not na(stopLine)
+        line.set_x2(stopLine, bar_index)
+
+    if not na(targetLine)
+        line.set_x2(targetLine, bar_index)
+
+    if not na(targetBox)
+        box.set_right(targetBox, bar_index)
 
     setupState := 0
 
@@ -666,53 +1047,192 @@ if tradeClosed
     plannedEntry := na
     plannedStop := na
     plannedTarget := na
-    plannedRisk := na
+
+    plannedRiskDistance := na
+    plannedRiskPercent := na
+    plannedATRExtension := na
 
 // ============================================================================
-// 19. VISUAL LEVELS
+// 26. DIAGNOSTIC PANEL
 // ============================================================================
 
-plot(
-     setupState == 3 ? plannedEntry : na,
-     title="Entry",
-     color=color.green,
-     linewidth=1,
-     style=plot.style_linebr)
+var table diagnostics =
+     table.new(
+         position.top_right,
+         2,
+         16,
+         border_width=1)
 
-plot(
-     setupState == 3 ? plannedStop : na,
-     title="Stop",
-     color=color.red,
-     linewidth=2,
-     style=plot.style_linebr)
+string stateText = switch setupState
+    0 => "IDLE"
+    1 => "POTENTIAL"
+    2 => "DEFENDED"
+    3 => "LONG ACTIVE"
+    => "UNKNOWN"
 
-plot(
-     setupState == 3 ? plannedTarget : na,
-     title="Target",
-     color=color.green,
-     linewidth=2,
-     style=plot.style_linebr)
+string dataReadyText =
+     dataReady ? "YES" : "NO"
+
+string sessionText =
+     sessionAllowed ? "YES" : "NO"
+
+string liquidityText =
+     liquidityAllowed ? "YES" : "NO"
+
+string rvolText =
+     not na(relativeDollarVolume)
+         ? str.format("{0,number,#.##}x", relativeDollarVolume)
+         : "N/A"
+
+string requiredText =
+     str.format("{0,number,#.##}x", volumeMultiplier)
+
+string barsText =
+     not na(barsSinceEvent)
+         ? str.tostring(barsSinceEvent)
+         : "-"
+
+string protectedText =
+     not na(protectedLevel)
+         ? str.format("${0,number,#.##}", protectedLevel)
+         : "-"
+
+string failureText =
+     not na(failureLevel)
+         ? str.format("${0,number,#.##}", failureLevel)
+         : "-"
+
+string defenseText =
+     not na(defenseTriggerLevel)
+         ? str.format("${0,number,#.##}", defenseTriggerLevel)
+         : "-"
+
+string confirmationText =
+     not na(absorptionHigh)
+         ? str.format("${0,number,#.##}", absorptionHigh)
+         : "-"
+
+string entryText =
+     tradeActive
+         ? str.format("${0,number,#.##}", plannedEntry)
+         : "-"
+
+string stopText =
+     tradeActive
+         ? str.format("${0,number,#.##}", plannedStop)
+         : "-"
+
+string targetText =
+     tradeActive
+         ? str.format("${0,number,#.##}", plannedTarget)
+         : "-"
+
+string riskText =
+     tradeActive
+         ? str.format("{0,number,#.##}%", plannedRiskPercent)
+         : "-"
+
+string atrExtensionText =
+     tradeActive
+         ? str.format("{0,number,#.##}x", plannedATRExtension)
+         : "-"
+
+string currentRText =
+     tradeActive and
+     not na(currentR)
+         ? str.format("{0,number,#.##}R", currentR)
+         : "-"
+
+if barstate.islast
+
+    if showDiagnosticPanel
+
+        table.cell(diagnostics, 0, 0, "STATE")
+        table.cell(diagnostics, 1, 0, stateText)
+
+        table.cell(diagnostics, 0, 1, "Data Ready")
+        table.cell(diagnostics, 1, 1, dataReadyText)
+
+        table.cell(diagnostics, 0, 2, "RVOL$")
+        table.cell(diagnostics, 1, 2, rvolText)
+
+        table.cell(diagnostics, 0, 3, "Required")
+        table.cell(diagnostics, 1, 3, requiredText)
+
+        table.cell(diagnostics, 0, 4, "Session")
+        table.cell(diagnostics, 1, 4, sessionText)
+
+        table.cell(diagnostics, 0, 5, "Liquidity")
+        table.cell(diagnostics, 1, 5, liquidityText)
+
+        table.cell(diagnostics, 0, 6, "Bars Since Event")
+        table.cell(diagnostics, 1, 6, barsText)
+
+        table.cell(diagnostics, 0, 7, "Protected")
+        table.cell(diagnostics, 1, 7, protectedText)
+
+        table.cell(diagnostics, 0, 8, "Failure")
+        table.cell(diagnostics, 1, 8, failureText)
+
+        table.cell(diagnostics, 0, 9, "Defense >")
+        table.cell(diagnostics, 1, 9, defenseText)
+
+        table.cell(diagnostics, 0, 10, "Confirm >")
+        table.cell(diagnostics, 1, 10, confirmationText)
+
+        table.cell(diagnostics, 0, 11, "Entry")
+        table.cell(diagnostics, 1, 11, entryText)
+
+        table.cell(diagnostics, 0, 12, "Stop")
+        table.cell(diagnostics, 1, 12, stopText)
+
+        table.cell(diagnostics, 0, 13, "Target")
+        table.cell(diagnostics, 1, 13, targetText)
+
+        table.cell(diagnostics, 0, 14, "Entry Risk / ATR")
+        table.cell(
+             diagnostics,
+             1,
+             14,
+             riskText + " / " + atrExtensionText)
+
+        table.cell(diagnostics, 0, 15, "Current R")
+        table.cell(diagnostics, 1, 15, currentRText)
+
+    else
+
+        table.clear(
+             diagnostics,
+             0,
+             0,
+             1,
+             15)
 
 // ============================================================================
-// 20. ALERTS
+// 27. ALERTS
 // ============================================================================
 
 alertcondition(
      validNewSetup,
      title="Potential Block Absorption",
-     message="Valid potential Block Absorption detected.")
+     message="Valid Potential Block Absorption detected.")
 
 alertcondition(
      strongDefenseReaction,
      title="Block Level Defended",
-     message="Block Absorption level defended.")
+     message="Block Absorption protected level defended.")
 
 alertcondition(
      entryTooExtended,
      title="Entry Rejected",
-     message="Block Absorption confirmed but entry rejected due to excessive risk.")
+     message="Block Absorption confirmed but entry rejected because risk/ATR extension is too large.")
 
 alertcondition(
      longSignal,
      title="Long Entry",
      message="Block Absorption confirmed and LONG entry triggered.")
+
+alertcondition(
+     absorptionFailed,
+     title="Block Absorption Failed",
+     message="Protected Block Absorption level failed.")
